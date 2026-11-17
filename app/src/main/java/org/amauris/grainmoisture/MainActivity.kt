@@ -288,19 +288,20 @@ class MainActivity : Activity() {
         p.addView(button("Test signal (tone on and off)") { runSignalTest() })
         setupResult = mono("")
         p.addView(setupResult)
-        p.addView(heading("Wiring (CTIA plug, Samsung and Apple)"))
+        p.addView(heading("Wiring (no resistor needed)"))
         p.addView(
             body(
-                "Tip (left audio) → resistor → centre bolt\n" +
-                    "Sleeve (next to cable) = mic → centre bolt\n" +
-                    "Ring 2 = ground → can\n" +
-                    "Ring 1 (right audio) = not used, tape it off"
+                "Tip (left audio) = tone → the CAN\n" +
+                    "Sleeve (next to cable) = mic → the centre BOLT\n" +
+                    "Ring 2 (ground) and Ring 1 (right audio) → not connected, tape them off"
             )
         )
         p.addView(
             hint(
-                "Apple EarPods colours: green = tip (tone), red = ring 1 (tape off), white = mic, " +
-                    "copper = ground (twist all the coppers together, including the one wrapped round the white)."
+                "Apple EarPods colours: green = tone → can, white = mic → bolt. Twist all the coppers " +
+                    "together and tape them off with the red. Make sure copper never touches the can: that " +
+                    "would short the tone. The phone's own mic resistor and the paddy form the measuring " +
+                    "circuit, so wetter paddy gives a STRONGER signal."
             )
         )
         p.addView(heading("App"))
@@ -354,8 +355,10 @@ class MainActivity : Activity() {
         p.addView(button("Record a reading") { recordSingle() })
         p.addView(
             hint(
-                "Aim for a level between about −40 and −6 dB with no clipping. Change the tone level " +
-                    "or phone volume while live to get there, then leave them fixed for all samples."
+                "Wetter paddy reads higher. Set the level with your WETTEST sample in the cell: raise the " +
+                    "tone level or phone volume until it reads between about −20 and −6 dB with no clipping, then " +
+                    "leave both fixed for all samples. Dry paddy will read lower, which is expected. Higher " +
+                    "frequencies (10–18 kHz) usually give a stronger signal."
             )
         )
         return p
@@ -497,12 +500,15 @@ class MainActivity : Activity() {
                 sb.append(fmt("Signal/noise: %6.1f dB\n", snr))
                 sb.append(fmt("Peak:        %5.0f%% of full scale\n\n", maxOf(m1.peak, m10.peak) * 100))
                 if (routed == null || routed.type == AudioDeviceInfo.TYPE_BUILTIN_MIC) {
-                    sb.append("⚠ The phone is using its own mic, not the cell. Check the adapter supports a headset mic and the sleeve wiring.\n")
+                    sb.append("⚠ The phone is using its own mic, not the cell. Check the adapter supports a headset mic and the white (mic) wire.\n")
                 }
                 if (maxOf(m1.peak, m10.peak) > 0.95) sb.append("⚠ Clipping. Lower the tone level or phone volume.\n")
-                if (snr < 20) sb.append("⚠ Weak signal. Check the tip → resistor → bolt connection, or raise the level.\n")
+                if (snr < 20) {
+                    sb.append("Weak signal. That's expected with an empty or dry cell. To check the wiring, fill the cell " +
+                        "with damp grain (or briefly touch the bolt to the can): the 10 kHz level should jump.\n")
+                }
                 if (snr >= 20 && maxOf(m1.peak, m10.peak) <= 0.95 && routed != null && routed.type != AudioDeviceInfo.TYPE_BUILTIN_MIC) {
-                    sb.append("✓ Looks good. Fill the cell and try the Measure tab.\n")
+                    sb.append("✓ Signal is getting through. Fill the cell and try the Measure tab.\n")
                 }
                 ui.post { setupResult.text = sb.toString() }
             } catch (e: Exception) {
@@ -594,7 +600,7 @@ class MainActivity : Activity() {
         val sb = StringBuilder()
         sb.append(fmt("at %.0f Hz · steadiness ±%.2f dB · peak %.0f%%", m.freqHz, m.stdDb, m.peak * 100))
         if (m.peak > 0.95) sb.append("\n⚠ Clipping: lower the tone level or volume")
-        if (m.levelDb < -70) sb.append("\n⚠ Very weak: check the wiring and the bolt connection")
+        if (m.levelDb < -70) sb.append("\nVery weak: normal for an empty or very dry cell. If wet grain also reads this low, check the green → can and white → bolt connections")
         if (lastVolActual < curVol) sb.append("\n! Phone limited the volume to $lastVolActual")
         liveDetail.text = sb.toString()
     }

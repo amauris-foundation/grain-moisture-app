@@ -4,17 +4,23 @@ Android app (Amauris Foundation) that turns a phone plus a tin-can sensing cell 
 low-cost grain moisture meter for smallholder farmers in Ghana. Read this before changing anything.
 
 ## How the sensor works
-- **Cell:** a standard 400 g / 15 oz food can (outer electrode, grounded) with a metal bolt
+- **Cell:** a standard 400 g / 15 oz food can (outer electrode, driven by the tone) with a metal bolt
   standing in the centre (sense electrode). 3D-printed base (hex pocket for the bolt head,
   bolt never touches the can) and top collar keep the bolt centred. Grain fills the ~2.5–3 cm
   ring between bolt and can. Fill through a hopper from a fixed height and strike off at the
   rim; never press the grain (packing changes the reading).
-- **Circuit (voltage divider):** phone tone → series resistor R (start ~10 kΩ) → bolt. The mic
-  input also connects to the bolt and reads the voltage left on it. Wetter grain conducts and
-  stores more charge, so it leaks more of the tone to the grounded can and the mic level drops.
-  Grounding the can also shields the bolt from hands.
-- **Plug pinout (CTIA, Samsung and Apple):** Tip = left audio = tone out (through R).
-  Ring 1 = right audio, unused. Ring 2 = ground → can. Sleeve = mic → bolt.
+- **Circuit (current design, NO resistor — decided 2026-11-17 because resistors aren't easy
+  to get in the field):** tone → can → paddy → bolt → mic. The phone's internal mic-bias resistor
+  (~2 kΩ) and the paddy form the voltage divider; the signal returns through the adapter's
+  internal ground, so no external ground wire. Wetter paddy conducts and stores more charge, so
+  the mic level RISES with moisture. Dry paddy acts mostly like a small capacitor, so higher
+  frequencies pass more signal. Tone is on the can because the phone's output is low impedance
+  (hands on the can barely matter); the sensitive mic node stays inside on the bolt.
+- **Plug pinout (CTIA, Samsung and Apple):** Tip = left audio = tone → can. Sleeve = mic → bolt.
+  Ring 1 (right audio) and Ring 2 (ground) not connected at the cell; insulate them. Ground
+  touching the can would short the tone output.
+- Earlier alternative (not used): tone → ~10 kΩ resistor → bolt, mic on bolt, can grounded; there
+  the level FALLS with moisture.
 - Phone mic lines carry a ~2 V DC bias; very low resistance (very wet grain) could look like a
   headset button press. The app ignores headset buttons while measuring.
 
@@ -34,12 +40,14 @@ low-cost grain moisture meter for smallholder farmers in Ghana. Read this before
   to the mic also trips the button detector). Results are held ~2 s so flickery contacts read clearly.
   Tone level 0.1 to avoid overload. Right channel is silent outside the wire finder.
 - Apple EarPods colours (confirmed by Aaron): green = tip, red = ring 1, white = mic, copper = ground
-  (the copper wrapped around the white is the mic shield; all coppers join at ring 2).
+  (the copper wrapped around the white is the mic shield; all coppers join at ring 2). Cell wiring:
+  green → can, white → bolt, coppers + red taped off.
 - A dead short on the mic held too long opens the voice assistant (Gemini); a ~240 Ω path also
   maps to the voice-assist key. VOICE_ASSIST/ASSIST keys are swallowed while audio runs, but
   Android may intercept a long headset-hook press system-wide before the app sees it.
-- Hardware option: ~1 kΩ in series on the mic wire keeps the DC load out of the headset-button
-  range (<~600 Ω) whatever the grain does, while barely affecting the tone.
+- The mic's ~2 V DC bias now sees the paddy's DC resistance to the tone output. Paddy is far above
+  the headset-button range (<~600 Ω), so false button presses should only happen with a short
+  (bolt touching the can).
 - Phone media volume is set and held during readings; volume and media keys are swallowed and a
   MediaSession absorbs headset button presses.
 - Data: `readings.csv` and `calibration.csv` in app-private storage (`Store.kt`).
