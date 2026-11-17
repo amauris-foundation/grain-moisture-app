@@ -67,6 +67,8 @@ class MainActivity : Activity() {
     @Volatile private var curVol = 0
     @Volatile private var lastVolActual = 0
     @Volatile private var volWarned = false
+    @Volatile private var wireRunning = false
+    private var lastButtonAt = 0L
 
     private var mediaSession: MediaSession? = null
     private var focusRequest: AudioFocusRequest? = null
@@ -93,6 +95,12 @@ class MainActivity : Activity() {
     // Setup tab
     private lateinit var setupStatus: TextView
     private lateinit var setupResult: TextView
+
+    // Wire finder (Setup tab)
+    private lateinit var wireBtn: Button
+    private lateinit var wireStatus: TextView
+    private lateinit var wireLevels: TextView
+    private lateinit var wireButtonLog: TextView
 
     // Calibrate tab
     private lateinit var calSampleSpinner: Spinner
@@ -139,10 +147,12 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         liveRunning = false
+        wireRunning = false
     }
 
     override fun onDestroy() {
         liveRunning = false
+        wireRunning = false
         am.unregisterAudioDeviceCallback(deviceCallback)
         worker.execute { engine.close() }
         worker.shutdown()
@@ -156,7 +166,10 @@ class MainActivity : Activity() {
 
     /** While audio is running, swallow volume and headset-button presses. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (engine.isOpen && event.keyCode in BLOCKED_KEYS) return true
+        if (engine.isOpen && event.keyCode in BLOCKED_KEYS) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.keyCode in HEADSET_KEYS) onHeadsetButton()
+            return true
+        }
         return super.dispatchKeyEvent(event)
     }
 
@@ -228,6 +241,43 @@ class MainActivity : Activity() {
 
     private fun buildSetupTab(): View {
         val p = page()
+        p.addView(heading("Wire finder"))
+        p.addView(
+            body(
+                "Use this first, to find which coloured wire is which after you cut the headset cable. " +
+                    "No multimeter needed, and brief touches can't harm the phone."
+            )
+        )
+        p.addView(
+            hint(
+                "1. Cut the cable between the plug and the remote, strip the four wires and burn off any " +
+                    "coloured coating. Keep the bare ends apart.\n" +
+                    "2. Plug in the adapter and tap Start. Keep the wires apart for 2 seconds while it listens.\n" +
+                    "3. Hold one wire and briefly touch it to each of the others, one at a time:\n" +
+                    "   • LEFT tone → one wire is MIC, the other is TIP (tone out)\n" +
+                    "   • RIGHT tone → one wire is MIC, the other is RING 1 (not used)\n" +
+                    "   • Button press → one wire is MIC, the other is GROUND\n" +
+                    "The wire that shows up in all three is the MIC. Its partners tell you the rest."
+            )
+        )
+        wireBtn = button("Start wire finder") { toggleWireFinder() }
+        p.addView(wireBtn)
+        wireStatus = TextView(this).apply {
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, dp(4))
+        }
+        p.addView(wireStatus)
+        wireButtonLog = TextView(this).apply {
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(198, 40, 40))
+        }
+        p.addView(wireButtonLog)
+        wireLevels = mono("")
+        p.addView(wireLevels)
+
         p.addView(heading("Setup check"))
         setupStatus = body("")
         p.addView(setupStatus)
@@ -592,6 +642,106 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------------------------------------------------------------- wire finder
+
+    /**
+     * Plays a low tone on the left wire (tip) and a high tone on the right wire (ring 1),
+     * and listens on the mic wire. Touching a bare wire to the mic wire lets that wire's
+     * tone straight into the mic. Touching the mic wire to ground shorts it, which the
+     * phone reports as a headset button press.
+     */
+    private fun toggleWireFinder() {
+        if (wireRunning) {
+            wireRunning = false
+            return
+        }
+        if (!hasMic()) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
+            return
+        }
+        if (busy) { toast("Busy — stop the current reading first"); return }
+        busy = true
+        wireRunning = true
+        wireBtn.text = "Stop wire finder"
+        wireStatus.text = "Listening… keep the wires apart"
+        wireButtonLog.text = ""
+        wireLevels.text = ""
+        val freqs = listOf(WIRE_LEFT_HZ, WIRE_RIGHT_HZ)
+        worker.execute {
+            try {
+                if (!ensureEngine()) return@execute
+                engine.tone.frequency = WIRE_LEFT_HZ
+                engine.tone.level = WIRE_LEVEL
+                engine.tone.rightFrequency = WIRE_RIGHT_HZ
+                engine.tone.rightLevel = WIRE_LEVEL
+                val routed = engine.routedInput()
+                val builtIn = routed == null || routed.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
+
+                // Learn the background with the wires apart.
+                engine.listen(freqs, 300)
+                var baseL = -200.0
+                var baseR = -200.0
+                repeat(10) {
+                    val b = engine.listen(freqs, 150)
+                    baseL = maxOf(baseL, b.levelsDb[0])
+                    baseR = maxOf(baseR, b.levelsDb[1])
+                }
+                val thrL = maxOf(baseL + WIRE_MARGIN_DB, -75.0)
+                val thrR = maxOf(baseR + WIRE_MARGIN_DB, -75.0)
+
+                while (wireRunning) {
+                    val snap = engine.listen(freqs, 150)
+                    val l = snap.levelsDb[0]
+                    val r = snap.levelsDb[1]
+                    val hearL = l > thrL
+                    val hearR = r > thrR
+                    val status = when {
+                        hearL && hearR -> "Both tones — more than two wires are touching. Separate them."
+                        hearL -> "LEFT tone: one wire is MIC, the other is TIP (tone out)"
+                        hearR -> "RIGHT tone: one wire is MIC, the other is RING 1 (not used)"
+                        else -> "Nothing heard — touch two wires together"
+                    }
+                    val levels = StringBuilder()
+                    if (builtIn) {
+                        levels.append("⚠ The phone is listening on its own mic, not the cable.\n")
+                        levels.append("Unplug the adapter, plug it back in and start again.\n\n")
+                    }
+                    levels.append(fmt("Left tone  (%4.0f Hz): %6.1f dB  (background %6.1f)\n", WIRE_LEFT_HZ, l, baseL))
+                    levels.append(fmt("Right tone (%4.0f Hz): %6.1f dB  (background %6.1f)\n", WIRE_RIGHT_HZ, r, baseR))
+                    levels.append("Mic in use: ${engine.routedInputName()}")
+                    val levelText = levels.toString()
+                    ui.post {
+                        wireStatus.text = status
+                        wireLevels.text = levelText
+                        if (System.currentTimeMillis() - lastButtonAt > 6000) wireButtonLog.text = ""
+                    }
+                }
+            } catch (e: Exception) {
+                // Shorting wires can make the phone briefly drop the adapter; say so plainly.
+                ui.post { wireStatus.text = "Stopped: ${e.message}. If you were touching wires, unplug and replug the adapter, then start again." }
+            } finally {
+                engine.tone.rightLevel = 0.0
+                engine.tone.frequency = curFreq
+                engine.tone.level = curTone
+                stopEngine()
+                wireRunning = false
+                busy = false
+                ui.post { wireBtn.text = "Start wire finder" }
+            }
+        }
+    }
+
+    /** Called on the main thread when the phone reports a headset button press. */
+    private fun onHeadsetButton() {
+        val now = System.currentTimeMillis()
+        if (now - lastButtonAt < 400) return
+        lastButtonAt = now
+        if (wireRunning) {
+            val t = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(now))
+            wireButtonLog.text = "Button press ($t): those two wires are MIC + GROUND"
+        }
+    }
+
     /** Opens audio if needed. Runs on the worker thread. */
     private fun ensureEngine(): Boolean {
         if (!engine.isOpen) {
@@ -640,7 +790,10 @@ class MainActivity : Activity() {
         // pause anything or reach other apps. The callback simply ignores them.
         val ms = MediaSession(this, "GrainMoisture")
         ms.setCallback(object : MediaSession.Callback() {
-            override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean = true
+            override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                onHeadsetButton()
+                return true
+            }
         })
         ms.setPlaybackState(
             PlaybackState.Builder()
@@ -986,6 +1139,14 @@ class MainActivity : Activity() {
         val TAB_NAMES = listOf("Setup", "Measure", "Sweep", "Calibrate", "Data")
         val GRAINS = listOf("Rice paddy", "Milled rice", "Maize", "Sorghum", "Millet", "Soybean", "Groundnut", "Other")
         val METHODS = listOf("Oven dry", "Commercial meter", "Salt test", "Other")
+        const val WIRE_LEFT_HZ = 700.0
+        const val WIRE_RIGHT_HZ = 2300.0
+        const val WIRE_LEVEL = 0.3
+        const val WIRE_MARGIN_DB = 20.0
+        val HEADSET_KEYS = setOf(
+            KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY,
+            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+        )
         val BLOCKED_KEYS = setOf(
             KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_MUTE,
             KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY,

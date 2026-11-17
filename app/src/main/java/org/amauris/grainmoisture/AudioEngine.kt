@@ -35,13 +35,16 @@ data class Measurement(
 )
 
 /**
- * Continuous sine generator. The tone goes out on the LEFT channel only, which is
+ * Continuous sine generator. The measuring tone goes out on the LEFT channel, which is
  * the plug TIP; in the cell wiring the tip feeds the series resistor to the bolt.
- * Frequency and level can be changed while it runs without clicks.
+ * The RIGHT channel (ring 1) is silent unless [rightLevel] is set, which only the
+ * wire finder does. Frequencies and levels can be changed while it runs without clicks.
  */
 class ToneGenerator(private val sampleRate: Int) {
     @Volatile var frequency = 10000.0
     @Volatile var level = 0.5 // 0..1 of digital full scale
+    @Volatile var rightFrequency = 2300.0
+    @Volatile var rightLevel = 0.0
     @Volatile private var running = false
     private var thread: Thread? = null
     private var track: AudioTrack? = null
@@ -77,17 +80,20 @@ class ToneGenerator(private val sampleRate: Int) {
         val th = Thread {
             val frames = 1024
             val buf = ShortArray(frames * 2)
-            val silent: Short = 0
             var phase = 0.0
+            var phaseR = 0.0
             while (running) {
-                val f = frequency
                 val a = level.coerceIn(0.0, 1.0) * 32767.0 * 0.98
-                val inc = 2.0 * PI * f / sampleRate
+                val inc = 2.0 * PI * frequency / sampleRate
+                val aR = rightLevel.coerceIn(0.0, 1.0) * 32767.0 * 0.98
+                val incR = 2.0 * PI * rightFrequency / sampleRate
                 for (i in 0 until frames) {
                     buf[2 * i] = (sin(phase) * a).toInt().toShort()
-                    buf[2 * i + 1] = silent
+                    buf[2 * i + 1] = (sin(phaseR) * aR).toInt().toShort()
                     phase += inc
                     if (phase > 2.0 * PI) phase -= 2.0 * PI
+                    phaseR += incR
+                    if (phaseR > 2.0 * PI) phaseR -= 2.0 * PI
                 }
                 t.write(buf, 0, buf.size)
             }
@@ -230,6 +236,34 @@ class AudioEngine(context: Context) {
         val meanAmp = amps.average()
         val rms = sqrt(sumSq / count)
         return Measurement(freq, meanAmp, toDb(meanAmp), std, peak, toDb(rms), nBlocks)
+    }
+
+    /** Result of [listen]: level of each requested tone, plus broadband level, in dBFS. */
+    data class Snapshot(val levelsDb: List<Double>, val rmsDb: Double, val peak: Double)
+
+    /**
+     * Reads the next [durationMs] of mic audio (no settling) and returns the level of each
+     * frequency in [freqs]. Used by the wire finder, which listens for two tones at once.
+     */
+    fun listen(freqs: List<Double>, durationMs: Int): Snapshot {
+        val r = record ?: throw IllegalStateException("Audio is not running")
+        val n = max(1024, sampleRate * durationMs / 1000)
+        val data = ShortArray(n)
+        var filled = 0
+        while (filled < n) {
+            val got = r.read(data, filled, n - filled)
+            if (got <= 0) throw IllegalStateException("Microphone read failed ($got)")
+            filled += got
+        }
+        var peak = 0.0
+        var sumSq = 0.0
+        for (s in data) {
+            val v = s / 32768.0
+            if (abs(v) > peak) peak = abs(v)
+            sumSq += v * v
+        }
+        val levels = freqs.map { toDb(toneAmplitude(data, it, sampleRate)) }
+        return Snapshot(levels, toDb(sqrt(sumSq / n)), peak)
     }
 
     companion object {

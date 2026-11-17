@@ -20,12 +20,16 @@ low-cost grain moisture meter for smallholder farmers in Ghana. Read this before
 
 ## App (v1 = bench-test tool)
 - Plain Android framework + Kotlin, **no AndroidX or other dependencies** (keeps the build simple).
-- Tabs: Setup (device/mic checks, signal test), Measure (live level, record a reading),
+- Tabs: Setup (wire finder, device/mic checks, signal test), Measure (live level, record a reading),
   Sweep (frequency sweep saved per sample and refill), Calibrate (enter reference moisture,
   plot level vs moisture with linear fit), Data (CSV export to Downloads / share).
 - Audio: 48 kHz, tone on left channel only, mic recorded with `UNPROCESSED` source when
   supported (else `VOICE_RECOGNITION`), routed to the USB/wired headset. Level is measured
   with a Hann-windowed single-frequency DFT in 100 ms blocks (`AudioEngine.toneAmplitude`).
+- **Wire finder** (Setup tab): plays 700 Hz on left (tip) and 2300 Hz on right (ring 1) and
+  listens on the mic. User touches bare wires in pairs: left tone heard = mic + tip, right tone =
+  mic + ring 1, headset button press = mic + ground. Background is learned for ~2 s with the
+  wires apart; a tone counts as heard 20 dB above background. Right channel is silent otherwise.
 - Phone media volume is set and held during readings; volume and media keys are swallowed and a
   MediaSession absorbs headset button presses.
 - Data: `readings.csv` and `calibration.csv` in app-private storage (`Store.kt`).
