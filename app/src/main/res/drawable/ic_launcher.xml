@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple launcher icon: a grain kernel inside a can-shaped ring, on green. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#2E7D32"
+        android:pathData="M2,24 A22,22 0 1,1 46,24 A22,22 0 1,1 2,24 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:pathData="M14,12 L14,36 L34,36 L34,12" />
+    <path
+        android:fillColor="#F2D27A"
+        android:pathData="M24,15 C29,19 29,29 24,33 C19,29 19,19 24,15 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#8D6E2A"
+        android:strokeWidth="1.2"
+        android:pathData="M24,17 L24,31" />
+</vector>
