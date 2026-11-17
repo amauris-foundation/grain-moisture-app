@@ -48,6 +48,13 @@ low-cost grain moisture meter for smallholder farmers in Ghana. Read this before
 - The mic's ~2 V DC bias now sees the paddy's DC resistance to the tone output. Paddy is far above
   the headset-button range (<~600 Ω), so false button presses should only happen with a short
   (bolt touching the can).
+- **Diagnostics** (Measure tab, during live): shows the routed mic, broadband level and a count
+  of headset-button signals, and logs time-stamped events: mic switched, input went SILENT
+  (broadband < −95 dBFS, i.e. the adapter muted the mic), input came back, button signals, inputs
+  added/removed. Added after a bench test where a damp sponge read −40 dB for a few seconds and
+  then dropped to ~−100 dB (suspected adapter mic detection muting the input; also a very low
+  resistance and a galvanic zinc/tin cell). Proposed hardware fix: splice the EarPods' own mic
+  capsule back onto the white/copper so the adapter always detects a mic.
 - Phone media volume is set and held during readings; volume and media keys are swallowed and a
   MediaSession absorbs headset button presses.
 - Data: `readings.csv` and `calibration.csv` in app-private storage (`Store.kt`).

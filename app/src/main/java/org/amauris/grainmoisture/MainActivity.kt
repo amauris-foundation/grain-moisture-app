@@ -69,6 +69,8 @@ class MainActivity : Activity() {
     @Volatile private var volWarned = false
     @Volatile private var wireRunning = false
     @Volatile private var lastButtonAt = 0L
+    @Volatile private var buttonCount = 0
+    private val diagEvents = ArrayDeque<String>()
 
     private var mediaSession: MediaSession? = null
     private var focusRequest: AudioFocusRequest? = null
@@ -86,6 +88,8 @@ class MainActivity : Activity() {
     private lateinit var liveBig: TextView
     private lateinit var liveDetail: TextView
     private lateinit var liveBtn: Button
+    private lateinit var diagStatus: TextView
+    private lateinit var diagLog: TextView
 
     // Sweep tab
     private lateinit var sweepFreqs: EditText
@@ -121,8 +125,14 @@ class MainActivity : Activity() {
     private var currentTab = 0
 
     private val deviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = refreshSetup()
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = refreshSetup()
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+            refreshSetup()
+            addedDevices?.filter { it.isSource }?.forEach { logDiag("Phone reports new input: ${AudioEngine.typeName(it.type)}") }
+        }
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+            refreshSetup()
+            removedDevices?.filter { it.isSource }?.forEach { logDiag("Phone reports input removed: ${AudioEngine.typeName(it.type)}") }
+        }
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -353,6 +363,17 @@ class MainActivity : Activity() {
         liveBtn = button("Start live") { toggleLive() }
         p.addView(liveBtn)
         p.addView(button("Record a reading") { recordSingle() })
+
+        p.addView(heading("Diagnostics"))
+        diagStatus = mono("Starts with live reading.")
+        p.addView(diagStatus)
+        diagLog = mono("")
+        p.addView(diagLog)
+        p.addView(button("Clear diagnostics log") {
+            diagEvents.clear()
+            buttonCount = 0
+            diagLog.text = ""
+        })
         p.addView(
             hint(
                 "Wetter paddy reads higher. Set the level with your WETTEST sample in the cell: raise the " +
@@ -539,11 +560,35 @@ class MainActivity : Activity() {
             try {
                 if (!ensureEngine()) return@execute
                 var first = true
+                var lastRouted = ""
+                var wasSilent = false
+                ui.post { logDiag("Live started. Mic: ${engine.routedInputName()} (${engine.sourceName})") }
                 while (liveRunning) {
                     engine.tone.level = curTone
                     if (lastVolActual != curVol) applyVolume()
                     val save = pendingSave
                     val m = engine.measure(curFreq, if (first) 400 else 40, if (save != null) 1000 else 400)
+                    val routed = engine.routedInputName()
+                    if (!first && routed != lastRouted) {
+                        ui.post { logDiag("Mic switched: $lastRouted → $routed") }
+                    }
+                    lastRouted = routed
+                    // Near digital zero means nothing is coming in at all, not just a weak tone.
+                    val silent = m.rmsDb < SILENT_DB
+                    if (!first && silent != wasSilent) {
+                        val msg = if (silent) {
+                            fmt("Input went SILENT (%.0f dB). The adapter may have muted the mic.", m.rmsDb)
+                        } else {
+                            fmt("Input came back (%.0f dB).", m.rmsDb)
+                        }
+                        ui.post { logDiag(msg) }
+                    }
+                    wasSilent = silent
+                    val diag = fmt(
+                        "Mic: %s\nAll sound: %.1f dB%s · button signals: %d",
+                        routed, m.rmsDb, if (silent) " (SILENT)" else "", buttonCount
+                    )
+                    ui.post { diagStatus.text = diag }
                     first = false
                     if (save != null) {
                         pendingSave = null
@@ -800,6 +845,17 @@ class MainActivity : Activity() {
         val now = System.currentTimeMillis()
         if (now - lastButtonAt < 400) return
         lastButtonAt = now
+        buttonCount++
+        if (liveRunning) logDiag("Headset BUTTON signal: the mic line was pulled low (short or very low resistance)")
+    }
+
+    /** Adds a time-stamped line to the diagnostics log on the Measure tab. Main thread only. */
+    private fun logDiag(msg: String) {
+        if (!::diagLog.isInitialized) return
+        val t = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        diagEvents.addFirst("$t  $msg")
+        while (diagEvents.size > 12) diagEvents.removeLast()
+        diagLog.text = diagEvents.joinToString("\n")
     }
 
     /** Opens audio if needed. Runs on the worker thread. */
@@ -1199,6 +1255,7 @@ class MainActivity : Activity() {
         val TAB_NAMES = listOf("Setup", "Measure", "Sweep", "Calibrate", "Data")
         val GRAINS = listOf("Rice paddy", "Milled rice", "Maize", "Sorghum", "Millet", "Soybean", "Groundnut", "Other")
         val METHODS = listOf("Oven dry", "Commercial meter", "Salt test", "Other")
+        const val SILENT_DB = -95.0
         const val WIRE_LEFT_HZ = 700.0
         const val WIRE_RIGHT_HZ = 2300.0
         const val WIRE_LEVEL = 0.1
