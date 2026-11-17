@@ -68,7 +68,7 @@ class MainActivity : Activity() {
     @Volatile private var lastVolActual = 0
     @Volatile private var volWarned = false
     @Volatile private var wireRunning = false
-    private var lastButtonAt = 0L
+    @Volatile private var lastButtonAt = 0L
 
     private var mediaSession: MediaSession? = null
     private var focusRequest: AudioFocusRequest? = null
@@ -250,14 +250,17 @@ class MainActivity : Activity() {
         )
         p.addView(
             hint(
-                "1. Cut the cable between the plug and the remote, strip the four wires and burn off any " +
+                "1. Cut the cable between the plug and the remote, strip the wires and burn off any " +
                     "coloured coating. Keep the bare ends apart.\n" +
                     "2. Plug in the adapter and tap Start. Keep the wires apart for 2 seconds while it listens.\n" +
-                    "3. Hold one wire and briefly touch it to each of the others, one at a time:\n" +
-                    "   • LEFT tone → one wire is MIC, the other is TIP (tone out)\n" +
-                    "   • RIGHT tone → one wire is MIC, the other is RING 1 (not used)\n" +
-                    "   • Button press → one wire is MIC, the other is GROUND\n" +
-                    "The wire that shows up in all three is the MIC. Its partners tell you the rest."
+                    "3. The app can only hear the MIC wire, so every test must include it. On Apple EarPods " +
+                    "it is usually the white wire with copper wrapped around it.\n" +
+                    "4. Touch each other wire to the mic wire, one at a time:\n" +
+                    "   • LEFT tone (strong) → that wire is TIP, the tone wire\n" +
+                    "   • RIGHT tone (strong) → that wire is RING 1, not used\n" +
+                    "   • Button press → that wire is GROUND (all the copper wires are usually ground)\n" +
+                    "Pairs that don't include the mic wire show nothing. That's normal.\n" +
+                    "A long touch on ground can open the voice assistant. Keep touches short."
             )
         )
         wireBtn = button("Start wire finder") { toggleWireFinder() }
@@ -292,6 +295,12 @@ class MainActivity : Activity() {
                     "Sleeve (next to cable) = mic → centre bolt\n" +
                     "Ring 2 = ground → can\n" +
                     "Ring 1 (right audio) = not used, tape it off"
+            )
+        )
+        p.addView(
+            hint(
+                "Apple EarPods colours: green = tip (tone), red = ring 1 (tape off), white = mic, " +
+                    "copper = ground (twist all the coppers together, including the one wrapped round the white)."
             )
         )
         p.addView(heading("App"))
@@ -686,34 +695,83 @@ class MainActivity : Activity() {
                     baseL = maxOf(baseL, b.levelsDb[0])
                     baseR = maxOf(baseR, b.levelsDb[1])
                 }
-                val thrL = maxOf(baseL + WIRE_MARGIN_DB, -75.0)
-                val thrR = maxOf(baseR + WIRE_MARGIN_DB, -75.0)
+
+                var heldRank = 0
+                var heldText = WIRE_NONE
+                var heldUntil = 0L
+                var lastDirectAt = 0L
+                var maxL = -200.0
+                var maxR = -200.0
 
                 while (wireRunning) {
                     val snap = engine.listen(freqs, 150)
+                    val now = System.currentTimeMillis()
                     val l = snap.levelsDb[0]
                     val r = snap.levelsDb[1]
-                    val hearL = l > thrL
-                    val hearR = r > thrR
-                    val status = when {
-                        hearL && hearR -> "Both tones — more than two wires are touching. Separate them."
-                        hearL -> "LEFT tone: one wire is MIC, the other is TIP (tone out)"
-                        hearR -> "RIGHT tone: one wire is MIC, the other is RING 1 (not used)"
-                        else -> "Nothing heard — touch two wires together"
+                    maxL = maxOf(maxL, l)
+                    maxR = maxOf(maxR, r)
+                    val dl = l - baseL
+                    val dr = r - baseR
+                    val clipped = snap.peak > 0.95
+
+                    // A wire touching the mic directly gives a strong tone; a tone that only
+                    // leaks through the shared ground is much weaker.
+                    val strongL = dl >= WIRE_DIRECT_DB || (clipped && dl > dr && dl >= WIRE_FAINT_DB)
+                    val strongR = dr >= WIRE_DIRECT_DB || (clipped && dr > dl && dr >= WIRE_FAINT_DB)
+                    val rank: Int
+                    val text: String
+                    when {
+                        strongL && strongR && kotlin.math.abs(dl - dr) < 10 -> { rank = 2; text = WIRE_BOTH }
+                        strongL && dl > dr -> { rank = 3; text = WIRE_LEFT }
+                        strongR && dr > dl -> { rank = 3; text = WIRE_RIGHT }
+                        dl >= WIRE_FAINT_DB && l > -80 && dl >= dr -> { rank = 1; text = WIRE_LEFT_FAINT }
+                        dr >= WIRE_FAINT_DB && r > -80 -> { rank = 1; text = WIRE_RIGHT_FAINT }
+                        else -> { rank = 0; text = WIRE_NONE }
                     }
+                    if (rank == 3) lastDirectAt = now
+                    // Hold a result for a moment so a flickery contact still reads clearly.
+                    if (rank >= heldRank || now > heldUntil) {
+                        heldRank = rank
+                        heldText = text
+                        heldUntil = now + when (rank) { 3, 2 -> 2000L; 1 -> 700L; else -> 0L }
+                    }
+
+                    // Shorting the mic to ground shows up as a headset button press. A speaker
+                    // wire touching the mic directly can also trip it, so a strong tone wins.
+                    val sinceButton = now - lastButtonAt
+                    val buttonVerdict = sinceButton in 400L..4000L && lastDirectAt < lastButtonAt - 1500
+                    val status: String
+                    val note: String
+                    if (heldRank == 3) {
+                        status = heldText
+                        note = if (sinceButton < 4000) {
+                            "The phone also saw a button signal. That's normal when a speaker wire touches the mic directly. Trust the tone."
+                        } else {
+                            ""
+                        }
+                    } else if (buttonVerdict) {
+                        status = WIRE_GROUND
+                        note = ""
+                    } else {
+                        status = heldText
+                        note = ""
+                    }
+
                     val levels = StringBuilder()
                     if (builtIn) {
                         levels.append("⚠ The phone is listening on its own mic, not the cable.\n")
                         levels.append("Unplug the adapter, plug it back in and start again.\n\n")
                     }
-                    levels.append(fmt("Left tone  (%4.0f Hz): %6.1f dB  (background %6.1f)\n", WIRE_LEFT_HZ, l, baseL))
-                    levels.append(fmt("Right tone (%4.0f Hz): %6.1f dB  (background %6.1f)\n", WIRE_RIGHT_HZ, r, baseR))
+                    levels.append(fmt("Left  %4.0f Hz: %6.1f dB  (+%4.1f over background)\n", WIRE_LEFT_HZ, l, dl))
+                    levels.append(fmt("Right %4.0f Hz: %6.1f dB  (+%4.1f over background)\n", WIRE_RIGHT_HZ, r, dr))
+                    levels.append(fmt("Strongest so far: left %.1f, right %.1f dB\n", maxL, maxR))
+                    levels.append(fmt("Strong = +%.0f dB or more; faint = +%.0f dB\n", WIRE_DIRECT_DB, WIRE_FAINT_DB))
                     levels.append("Mic in use: ${engine.routedInputName()}")
                     val levelText = levels.toString()
                     ui.post {
                         wireStatus.text = status
+                        wireButtonLog.text = note
                         wireLevels.text = levelText
-                        if (System.currentTimeMillis() - lastButtonAt > 6000) wireButtonLog.text = ""
                     }
                 }
             } catch (e: Exception) {
@@ -736,10 +794,6 @@ class MainActivity : Activity() {
         val now = System.currentTimeMillis()
         if (now - lastButtonAt < 400) return
         lastButtonAt = now
-        if (wireRunning) {
-            val t = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(now))
-            wireButtonLog.text = "Button press ($t): those two wires are MIC + GROUND"
-        }
     }
 
     /** Opens audio if needed. Runs on the worker thread. */
@@ -1141,17 +1195,26 @@ class MainActivity : Activity() {
         val METHODS = listOf("Oven dry", "Commercial meter", "Salt test", "Other")
         const val WIRE_LEFT_HZ = 700.0
         const val WIRE_RIGHT_HZ = 2300.0
-        const val WIRE_LEVEL = 0.3
-        const val WIRE_MARGIN_DB = 20.0
+        const val WIRE_LEVEL = 0.1
+        const val WIRE_FAINT_DB = 15.0
+        const val WIRE_DIRECT_DB = 35.0
+        const val WIRE_LEFT = "LEFT tone (strong): the wire touching the mic is TIP, the tone wire"
+        const val WIRE_RIGHT = "RIGHT tone (strong): the wire touching the mic is RING 1, not used"
+        const val WIRE_LEFT_FAINT = "Faint left tone only: probably leaking through the shared ground. Make one wire the MIC wire."
+        const val WIRE_RIGHT_FAINT = "Faint right tone only: probably leaking through the shared ground. Make one wire the MIC wire."
+        const val WIRE_BOTH = "Both tones strong: more than two wires are touching. Separate them."
+        const val WIRE_GROUND = "BUTTON PRESS: the wire touching the mic is GROUND"
+        const val WIRE_NONE = "Nothing heard: touch a wire to the MIC wire"
         val HEADSET_KEYS = setOf(
             KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY,
             KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            KeyEvent.KEYCODE_VOICE_ASSIST, KeyEvent.KEYCODE_ASSIST,
         )
         val BLOCKED_KEYS = setOf(
             KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_MUTE,
             KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY,
             KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            KeyEvent.KEYCODE_MEDIA_STOP,
+            KeyEvent.KEYCODE_MEDIA_STOP, KeyEvent.KEYCODE_VOICE_ASSIST, KeyEvent.KEYCODE_ASSIST,
         )
     }
 }

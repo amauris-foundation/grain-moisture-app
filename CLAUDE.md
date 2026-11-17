@@ -27,9 +27,19 @@ low-cost grain moisture meter for smallholder farmers in Ghana. Read this before
   supported (else `VOICE_RECOGNITION`), routed to the USB/wired headset. Level is measured
   with a Hann-windowed single-frequency DFT in 100 ms blocks (`AudioEngine.toneAmplitude`).
 - **Wire finder** (Setup tab): plays 700 Hz on left (tip) and 2300 Hz on right (ring 1) and
-  listens on the mic. User touches bare wires in pairs: left tone heard = mic + tip, right tone =
-  mic + ring 1, headset button press = mic + ground. Background is learned for ~2 s with the
-  wires apart; a tone counts as heard 20 dB above background. Right channel is silent otherwise.
+  listens on the mic. Every test pair must include the mic wire (the app can only hear the mic).
+  Strong tone (≥35 dB over background, or clipping) = direct contact: left = tip, right = ring 1.
+  Faint tone (15–35 dB) = leakage through the shared ground, not a real detection. Headset button
+  press = mic + ground, unless a strong tone was seen within 1.5 s (a speaker wire shorted straight
+  to the mic also trips the button detector). Results are held ~2 s so flickery contacts read clearly.
+  Tone level 0.1 to avoid overload. Right channel is silent outside the wire finder.
+- Apple EarPods colours (confirmed by Aaron): green = tip, red = ring 1, white = mic, copper = ground
+  (the copper wrapped around the white is the mic shield; all coppers join at ring 2).
+- A dead short on the mic held too long opens the voice assistant (Gemini); a ~240 Ω path also
+  maps to the voice-assist key. VOICE_ASSIST/ASSIST keys are swallowed while audio runs, but
+  Android may intercept a long headset-hook press system-wide before the app sees it.
+- Hardware option: ~1 kΩ in series on the mic wire keeps the DC load out of the headset-button
+  range (<~600 Ω) whatever the grain does, while barely affecting the tone.
 - Phone media volume is set and held during readings; volume and media keys are swallowed and a
   MediaSession absorbs headset button presses.
 - Data: `readings.csv` and `calibration.csv` in app-private storage (`Store.kt`).
