@@ -14,7 +14,12 @@ low-cost grain moisture meter for smallholder farmers in Ghana. Read this before
   (~2 kΩ) and the paddy form the voltage divider; the signal returns through the adapter's
   internal ground, so no external ground wire. Wetter paddy conducts and stores more charge, so
   the mic level RISES with moisture. Dry paddy acts mostly like a small capacitor, so higher
-  frequencies pass more signal. Tone is on the can because the phone's output is low impedance
+  frequencies pass more signal in principle, BUT the A17's USB headset mic path (VOICE_RECOGNITION;
+  UNPROCESSED isn't offered for it) cuts off high frequencies: in a 2026-11-17 bench video the
+  10 kHz bin sat at about −130 dB even with damp rice while broadband hiss was about −67 dB, and
+  the "spikes" were contact clicks, not the tone. Default tone is now 1 kHz; the sweep covers
+  200 Hz–10 kHz; the Setup test estimates the usable range from the mic hiss (tone off) at
+  1–15 kHz. Tone is on the can because the phone's output is low impedance
   (hands on the can barely matter); the sensitive mic node stays inside on the bolt.
 - **Plug pinout (CTIA, Samsung and Apple):** Tip = left audio = tone → can. Sleeve = mic → bolt.
   Ring 1 (right audio) and Ring 2 (ground) not connected at the cell; insulate them. Ground

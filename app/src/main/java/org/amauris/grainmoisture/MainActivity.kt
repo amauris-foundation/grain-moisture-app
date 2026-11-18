@@ -62,7 +62,7 @@ class MainActivity : Activity() {
     @Volatile private var busy = false
     @Volatile private var liveRunning = false
     @Volatile private var pendingSave: Meta? = null
-    @Volatile private var curFreq = 10000.0
+    @Volatile private var curFreq = 1000.0
     @Volatile private var curTone = 0.5
     @Volatile private var curVol = 0
     @Volatile private var lastVolActual = 0
@@ -326,7 +326,7 @@ class MainActivity : Activity() {
 
         freqInput = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
-            setText("10000")
+            setText("1000")
             addTextChangedListener(simpleWatcher { s ->
                 s.toDoubleOrNull()?.let { if (it in 20.0..23000.0) curFreq = it }
             })
@@ -378,8 +378,9 @@ class MainActivity : Activity() {
             hint(
                 "Wetter paddy reads higher. Set the level with your WETTEST sample in the cell: raise the " +
                     "tone level or phone volume until it reads between about −20 and −6 dB with no clipping, then " +
-                    "leave both fixed for all samples. Dry paddy will read lower, which is expected. Higher " +
-                    "frequencies (10–18 kHz) usually give a stronger signal."
+                    "leave both fixed for all samples. Dry paddy will read lower, which is expected. Use a " +
+                    "frequency the phone's headset mic can hear: many only pass up to about 4–8 kHz. The Setup " +
+                    "test shows this phone's usable range."
             )
         )
         return p
@@ -504,31 +505,60 @@ class MainActivity : Activity() {
             try {
                 if (!ensureEngine()) return@execute
                 val routed = engine.routedInput()
-                engine.tone.level = curTone
-                val m1 = engine.measure(1000.0, 500, 600)
-                val m10 = engine.measure(10000.0, 250, 600)
+
+                // 1. Tone off: listen to the mic's own hiss at several frequencies. Above the
+                //    phone's cut-off the hiss disappears, which shows the usable range even with
+                //    nothing in the cell.
                 engine.tone.level = 0.0
-                val n10 = engine.measure(10000.0, 300, 600)
+                engine.listen(BAND_PROBE_HZ, 300)
+                val sums = DoubleArray(BAND_PROBE_HZ.size)
+                val rounds = 8
+                repeat(rounds) {
+                    val snap = engine.listen(BAND_PROBE_HZ, 150)
+                    for (i in sums.indices) sums[i] += snap.levelsDb[i]
+                }
+                val noise = sums.map { it / rounds }
+                val ref = noise[0]
+                val judgeable = ref > -118.0
+                val usableHz = if (judgeable) {
+                    BAND_PROBE_HZ.filterIndexed { i, _ -> noise[i] > ref - BAND_DROP_DB }.maxOrNull() ?: 1000.0
+                } else {
+                    null
+                }
+
+                // 2. Tone on at 1 kHz, which every headset mic passes.
                 engine.tone.level = curTone
-                val snr = m10.levelDb - n10.levelDb
+                val m1 = engine.measure(1000.0, 400, 600)
+                val snr = m1.levelDb - ref
+
                 val sb = StringBuilder()
                 sb.append("Mic in use: ${engine.routedInputName()}\n")
                 sb.append("Mic mode:   ${engine.sourceName}\n")
-                sb.append("Volume:     $lastVolActual (asked for $curVol)\n\n")
-                sb.append(fmt("Tone  1 kHz: %7.1f dB\n", m1.levelDb))
-                sb.append(fmt("Tone 10 kHz: %7.1f dB\n", m10.levelDb))
-                sb.append(fmt("Tone off:    %7.1f dB (noise)\n", n10.levelDb))
+                sb.append("Volume:     $lastVolActual (asked for $curVol)\n")
+                val rates = routed?.sampleRates
+                if (rates != null && rates.isNotEmpty()) sb.append("Mic sample rates: ${rates.joinToString()} Hz\n")
+                sb.append("\nMic hiss with the tone off:\n")
+                BAND_PROBE_HZ.forEachIndexed { i, f ->
+                    sb.append(fmt("  %5.0f Hz: %7.1f dB\n", f, noise[i]))
+                }
+                if (usableHz == null) {
+                    sb.append("Too quiet to judge the usable range. Run a Sweep with damp grain in the cell instead.\n")
+                } else if (usableHz < 10000.0) {
+                    sb.append(fmt("⚠ This mic cuts off above about %.0f kHz. Use frequencies at or below that (1 kHz is the default).\n", usableHz / 1000))
+                } else {
+                    sb.append(fmt("✓ Mic passes up to at least %.0f kHz.\n", usableHz / 1000))
+                }
+                sb.append(fmt("\nTone 1 kHz:   %7.1f dB\n", m1.levelDb))
                 sb.append(fmt("Signal/noise: %6.1f dB\n", snr))
-                sb.append(fmt("Peak:        %5.0f%% of full scale\n\n", maxOf(m1.peak, m10.peak) * 100))
+                sb.append(fmt("Peak:         %5.0f%% of full scale\n\n", m1.peak * 100))
                 if (routed == null || routed.type == AudioDeviceInfo.TYPE_BUILTIN_MIC) {
                     sb.append("⚠ The phone is using its own mic, not the cell. Check the adapter supports a headset mic and the white (mic) wire.\n")
                 }
-                if (maxOf(m1.peak, m10.peak) > 0.95) sb.append("⚠ Clipping. Lower the tone level or phone volume.\n")
+                if (m1.peak > 0.95) sb.append("⚠ Clipping. Lower the tone level or phone volume.\n")
                 if (snr < 20) {
-                    sb.append("Weak signal. That's expected with an empty or dry cell. To check the wiring, fill the cell " +
-                        "with damp grain (or briefly touch the bolt to the can): the 10 kHz level should jump.\n")
-                }
-                if (snr >= 20 && maxOf(m1.peak, m10.peak) <= 0.95 && routed != null && routed.type != AudioDeviceInfo.TYPE_BUILTIN_MIC) {
+                    sb.append("Weak 1 kHz signal. That's expected with an empty or dry cell. To check the wiring, fill the cell " +
+                        "with damp grain: the level should rise.\n")
+                } else if (m1.peak <= 0.95 && routed != null && routed.type != AudioDeviceInfo.TYPE_BUILTIN_MIC) {
                     sb.append("✓ Signal is getting through. Fill the cell and try the Measure tab.\n")
                 }
                 ui.post { setupResult.text = sb.toString() }
@@ -1251,11 +1281,13 @@ class MainActivity : Activity() {
 
     companion object {
         const val REQ_MIC = 1
-        const val DEFAULT_SWEEP = "500, 1000, 2000, 5000, 10000, 15000, 18000"
+        const val DEFAULT_SWEEP = "200, 500, 1000, 2000, 3000, 5000, 7000, 10000"
+        val BAND_PROBE_HZ = listOf(1000.0, 2000.0, 3000.0, 5000.0, 7000.0, 10000.0, 15000.0)
         val TAB_NAMES = listOf("Setup", "Measure", "Sweep", "Calibrate", "Data")
         val GRAINS = listOf("Rice paddy", "Milled rice", "Maize", "Sorghum", "Millet", "Soybean", "Groundnut", "Other")
         val METHODS = listOf("Oven dry", "Commercial meter", "Salt test", "Other")
         const val SILENT_DB = -95.0
+        const val BAND_DROP_DB = 20.0
         const val WIRE_LEFT_HZ = 700.0
         const val WIRE_RIGHT_HZ = 2300.0
         const val WIRE_LEVEL = 0.1
