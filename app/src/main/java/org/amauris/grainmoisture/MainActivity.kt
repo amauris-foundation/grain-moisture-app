@@ -90,6 +90,8 @@ class MainActivity : Activity() {
     private lateinit var liveBtn: Button
     private lateinit var diagStatus: TextView
     private lateinit var diagLog: TextView
+    private lateinit var stabOut: TextView
+    private lateinit var micModeSpinner: Spinner
 
     // Sweep tab
     private lateinit var sweepFreqs: EditText
@@ -142,6 +144,7 @@ class MainActivity : Activity() {
         am = getSystemService(AUDIO_SERVICE) as AudioManager
         engine = AudioEngine(this)
         store = Store(this)
+        engine.micMode = prefs().getString(PREF_MIC_MODE, AudioEngine.MIC_MODES[0]) ?: AudioEngine.MIC_MODES[0]
         val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         curVol = (maxVol * 0.6).roundToInt().coerceIn(1, maxVol)
 
@@ -292,6 +295,27 @@ class MainActivity : Activity() {
         p.addView(wireLevels)
 
         p.addView(heading("Setup check"))
+        micModeSpinner = spinner(AudioEngine.MIC_MODES)
+        micModeSpinner.setSelection(AudioEngine.MIC_MODES.indexOf(engine.micMode).coerceAtLeast(0))
+        micModeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val mode = AudioEngine.MIC_MODES[position]
+                if (mode != engine.micMode) {
+                    engine.micMode = mode
+                    prefs().edit().putString(PREF_MIC_MODE, mode).apply()
+                    toast("Mic mode: $mode (used from the next reading)")
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        p.addView(row(label("Mic mode"), micModeSpinner))
+        p.addView(
+            hint(
+                "Auto tries unprocessed, then voice performance (made for live music, normally no noise " +
+                    "suppression), then voice recognition. If the Stability test on the Measure tab shows the " +
+                    "tone fading, try another mode here."
+            )
+        )
         setupStatus = body("")
         p.addView(setupStatus)
         p.addView(button("Refresh") { refreshSetup() })
@@ -363,6 +387,9 @@ class MainActivity : Activity() {
         liveBtn = button("Start live") { toggleLive() }
         p.addView(liveBtn)
         p.addView(button("Record a reading") { recordSingle() })
+        p.addView(button("10-second stability test") { runStability() })
+        stabOut = mono("")
+        p.addView(stabOut)
 
         p.addView(heading("Diagnostics"))
         diagStatus = mono("Starts with live reading.")
@@ -534,6 +561,7 @@ class MainActivity : Activity() {
                 val sb = StringBuilder()
                 sb.append("Mic in use: ${engine.routedInputName()}\n")
                 sb.append("Mic mode:   ${engine.sourceName}\n")
+                sb.append("Processing: ${engine.effectsStatus}\n")
                 sb.append("Volume:     $lastVolActual (asked for $curVol)\n")
                 val rates = routed?.sampleRates
                 if (rates != null && rates.isNotEmpty()) sb.append("Mic sample rates: ${rates.joinToString()} Hz\n")
@@ -592,7 +620,7 @@ class MainActivity : Activity() {
                 var first = true
                 var lastRouted = ""
                 var wasSilent = false
-                ui.post { logDiag("Live started. Mic: ${engine.routedInputName()} (${engine.sourceName})") }
+                ui.post { logDiag("Live started. Mic: ${engine.routedInputName()} (${engine.sourceName}). ${engine.effectsStatus}") }
                 while (liveRunning) {
                     engine.tone.level = curTone
                     if (lastVolActual != curVol) applyVolume()
@@ -663,6 +691,54 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {
                 ui.post { toast("Reading failed: ${e.message}") }
+            } finally {
+                stopEngine()
+                busy = false
+            }
+        }
+    }
+
+    /**
+     * Plays the tone for 10 s and prints the level each second. A steady tone that fades or
+     * pumps means the phone is still processing the mic; jumps point to a loose contact.
+     */
+    private fun runStability() {
+        if (!hasMic()) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
+            return
+        }
+        if (busy) { toast("Busy — stop live reading first"); return }
+        busy = true
+        stabOut.text = "Measuring for 10 seconds… keep the cell still."
+        worker.execute {
+            try {
+                if (!ensureEngine()) return@execute
+                engine.tone.level = curTone
+                val header = fmt("%.0f Hz · %s · %s\n", curFreq, engine.sourceName, engine.effectsStatus)
+                val levels = ArrayList<Double>()
+                val sb = StringBuilder(header)
+                for (sec in 1..10) {
+                    val m = engine.measure(curFreq, if (sec == 1) 300 else 0, 1000)
+                    levels.add(m.levelDb)
+                    sb.append(fmt("%2d s  %7.1f dB  ±%.2f\n", sec, m.levelDb, m.stdDb))
+                    val text = sb.toString()
+                    ui.post { stabOut.text = text }
+                }
+                val range = levels.maxOrNull()!! - levels.minOrNull()!!
+                val firstAvg = levels.take(3).average()
+                val lastAvg = levels.takeLast(3).average()
+                sb.append(fmt("\nRange over 10 s: %.2f dB\n", range))
+                sb.append(
+                    when {
+                        range < 1.0 -> "✓ Steady. Good enough for moisture readings."
+                        lastAvg < firstAvg - 6 -> "⚠ The tone FADES: the phone is still suppressing it. Try another Mic mode on the Setup tab."
+                        else -> "⚠ Unsteady. Check that the wire ends are bare copper and tight, and that the can is sanded where the green wire attaches."
+                    }
+                )
+                val text = sb.toString()
+                ui.post { stabOut.text = text }
+            } catch (e: Exception) {
+                ui.post { stabOut.text = "Stability test failed: ${e.message}" }
             } finally {
                 stopEngine()
                 busy = false
@@ -1190,6 +1266,8 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- helpers
 
+    private fun prefs() = getSharedPreferences("settings", MODE_PRIVATE)
+
     private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
@@ -1287,6 +1365,7 @@ class MainActivity : Activity() {
         val GRAINS = listOf("Rice paddy", "Milled rice", "Maize", "Sorghum", "Millet", "Soybean", "Groundnut", "Other")
         val METHODS = listOf("Oven dry", "Commercial meter", "Salt test", "Other")
         const val SILENT_DB = -95.0
+        const val PREF_MIC_MODE = "mic_mode"
         const val BAND_DROP_DB = 20.0
         const val WIRE_LEFT_HZ = 700.0
         const val WIRE_RIGHT_HZ = 2300.0

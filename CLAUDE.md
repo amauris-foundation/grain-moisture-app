@@ -34,8 +34,15 @@ low-cost grain moisture meter for smallholder farmers in Ghana. Read this before
 - Tabs: Setup (wire finder, device/mic checks, signal test), Measure (live level, record a reading),
   Sweep (frequency sweep saved per sample and refill), Calibrate (enter reference moisture,
   plot level vs moisture with linear fit), Data (CSV export to Downloads / share).
-- Audio: 48 kHz, tone on left channel only, mic recorded with `UNPROCESSED` source when
-  supported (else `VOICE_RECOGNITION`), routed to the USB/wired headset. Level is measured
+- Audio: 48 kHz, tone on left channel only, routed to the USB/wired headset. **No phone audio
+  processing wanted:** the mic mode (Setup tab, saved in prefs) picks the recording source —
+  Auto tries UNPROCESSED, then VOICE_PERFORMANCE (API 29+, no noise suppression on most phones),
+  then VOICE_RECOGNITION, then MIC; manual choices fall back to VOICE_RECOGNITION if they fail
+  to open. NoiseSuppressor, AutomaticGainControl and AcousticEchoCanceler are created on the
+  record session and disabled where Android exposes them (`AudioEngine.effectsStatus` reports
+  the result; vendor processing that isn't exposed can't be switched off from an app).
+  Measure tab has a 10-second stability test (level each second; fading = suppression,
+  jumps = loose contact). Added after a sweep showed ±4–22 dB within single readings. Level is measured
   with a Hann-windowed single-frequency DFT in 100 ms blocks (`AudioEngine.toneAmplitude`).
 - **Wire finder** (Setup tab): plays 700 Hz on left (tip) and 2300 Hz on right (ring 1) and
   listens on the mic. Every test pair must include the mic wire (the app can only hear the mic).

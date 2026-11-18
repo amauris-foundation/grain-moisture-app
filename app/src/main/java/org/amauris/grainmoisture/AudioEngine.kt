@@ -9,6 +9,11 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AudioEffect
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
+import android.os.Build
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -134,6 +139,15 @@ class AudioEngine(context: Context) {
     var sourceName = ""
         private set
 
+    /** What the app managed to do about the phone's own audio processing. */
+    var effectsStatus = ""
+        private set
+
+    /** Mic mode chosen on the Setup tab; one of [MIC_MODES]. */
+    @Volatile var micMode = MIC_MODES[0]
+
+    private val effects = mutableListOf<AudioEffect>()
+
     val isOpen: Boolean get() = record != null
 
     fun unprocessedSupported(): Boolean =
@@ -145,35 +159,103 @@ class AudioEngine(context: Context) {
     fun headsetOutput(): AudioDeviceInfo? =
         am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { it.type in HEADSET_TYPES }
 
+    /**
+     * Recording sources to try, in order. Every choice avoids the phone's voice processing
+     * as far as Android allows; "Auto" prefers unprocessed, then voice performance (meant
+     * for live music, normally no noise suppression), then voice recognition.
+     */
+    private fun sourceOrder(): List<Pair<Int, String>> {
+        val unprocessed = MediaRecorder.AudioSource.UNPROCESSED to "UNPROCESSED"
+        val performance = 10 to "VOICE_PERFORMANCE" // MediaRecorder.AudioSource.VOICE_PERFORMANCE, Android 10+
+        val recognition = MediaRecorder.AudioSource.VOICE_RECOGNITION to "VOICE_RECOGNITION"
+        val mic = MediaRecorder.AudioSource.MIC to "MIC"
+        val camcorder = MediaRecorder.AudioSource.CAMCORDER to "CAMCORDER"
+        val canPerform = Build.VERSION.SDK_INT >= 29
+        return when (micMode) {
+            "Unprocessed" -> listOf(unprocessed, recognition)
+            "Voice performance" -> if (canPerform) listOf(performance, recognition) else listOf(recognition)
+            "Voice recognition" -> listOf(recognition)
+            "Mic" -> listOf(mic, recognition)
+            "Camcorder" -> listOf(camcorder, recognition)
+            else -> buildList {
+                if (unprocessedSupported()) add(unprocessed)
+                if (canPerform) add(performance)
+                add(recognition)
+                add(mic)
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun open() {
         close()
-        val useUnprocessed = unprocessedSupported()
-        val src = if (useUnprocessed) {
-            MediaRecorder.AudioSource.UNPROCESSED
-        } else {
-            MediaRecorder.AudioSource.VOICE_RECOGNITION
-        }
-        sourceName = if (useUnprocessed) "UNPROCESSED" else "VOICE_RECOGNITION"
         val minBuf = AudioRecord.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
-        val r = AudioRecord(
-            src, sampleRate, AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT, max(minBuf, sampleRate * 2)
-        )
-        if (r.state != AudioRecord.STATE_INITIALIZED) {
+        var opened: AudioRecord? = null
+        for ((src, name) in sourceOrder()) {
+            val r = try {
+                AudioRecord(
+                    src, sampleRate, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, max(minBuf, sampleRate * 2)
+                )
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            if (r.state == AudioRecord.STATE_INITIALIZED) {
+                opened = r
+                sourceName = name
+                break
+            }
             r.release()
-            throw IllegalStateException("The microphone could not be opened")
         }
+        val r = opened ?: throw IllegalStateException("The microphone could not be opened")
+        effectsStatus = disableEffects(r.audioSessionId)
         headsetInput()?.let { r.setPreferredDevice(it) }
         r.startRecording()
         record = r
         tone.start(headsetOutput())
     }
 
+    /** Turns off noise suppression, auto gain and echo cancelling where Android exposes them. */
+    private fun disableEffects(sessionId: Int): String {
+        val parts = mutableListOf<String>()
+        fun off(label: String, available: Boolean, make: () -> AudioEffect?) {
+            if (!available) {
+                parts.add("$label: none")
+                return
+            }
+            val fx = try {
+                make()
+            } catch (_: Exception) {
+                null
+            }
+            if (fx == null) {
+                parts.add("$label: couldn't control")
+                return
+            }
+            try {
+                fx.setEnabled(false)
+            } catch (_: Exception) {
+            }
+            effects.add(fx)
+            parts.add(if (fx.enabled) "$label: STILL ON" else "$label: off")
+        }
+        off("Noise suppression", NoiseSuppressor.isAvailable()) { NoiseSuppressor.create(sessionId) }
+        off("Auto gain", AutomaticGainControl.isAvailable()) { AutomaticGainControl.create(sessionId) }
+        off("Echo cancelling", AcousticEchoCanceler.isAvailable()) { AcousticEchoCanceler.create(sessionId) }
+        return parts.joinToString(" · ")
+    }
+
     fun close() {
         tone.stop()
+        effects.forEach {
+            try {
+                it.release()
+            } catch (_: Exception) {
+            }
+        }
+        effects.clear()
         record?.let {
             try {
                 it.stop()
@@ -267,6 +349,8 @@ class AudioEngine(context: Context) {
     }
 
     companion object {
+        val MIC_MODES = listOf("Auto", "Voice performance", "Unprocessed", "Voice recognition", "Mic", "Camcorder")
+
         val HEADSET_TYPES = setOf(
             AudioDeviceInfo.TYPE_USB_HEADSET,
             AudioDeviceInfo.TYPE_WIRED_HEADSET,
